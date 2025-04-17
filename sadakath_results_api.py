@@ -7,6 +7,7 @@ import warnings
 warnings.filterwarnings("ignore", category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
+CORS(app)
 
 # Scraper function
 def get_results(reg_no, exam):
