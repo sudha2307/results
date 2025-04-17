@@ -1,68 +1,93 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
 import requests
 from bs4 import BeautifulSoup
+from flask import Flask, request, jsonify
+import warnings
+
+# Suppress InsecureRequestWarning for verify=False
+warnings.filterwarnings("ignore", category=requests.packages.urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
-CORS(app)  # to handle Flutter cross-origin requests
 
 # Scraper function
 def get_results(reg_no, exam):
-    url = "https://results.sadakath.ac.in/ResultPage.aspx"
-    payload = {
-        '__VIEWSTATE': '/wEPDwUJNzE3NDI4OTM5D2QWAgIBD2QWAgIDDxBkDxYBZhYBEAUITm92IDIwMjQFCE5vdiAyMDI0Z2RkZIR/zXQeTg+jyVZbtMreusymyMQ4',
-        '__VIEWSTATEGENERATOR': '7C3C6012',
-        '__EVENTVALIDATION': '/wEdAARzN7bZtmqtQXfSWIF0CIprZS6BASrBkr5QeAzZHQV1+txSYZLFsAialTI1fBLjIvnN+DvxnwFeFeJ9MIBWR693ivjs57FeIsSCjQoYF9sSNQrUVAY=',
-        'TxtRegno': reg_no,
-        'CMbExam': exam,
-        'Button1': 'Submit'
+    url = "https://results.sadakath.ac.in/resultpage.aspx"
+    session = requests.Session()
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
     }
 
-    print(f"🔍 Fetching result for: {reg_no}, {exam}")
-    response = requests.post(url, data=payload, verify=False)
-    print(f"📥 Response received (status code: {response.status_code})")
+    try:
+        # First GET request to fetch the ViewState and other hidden fields
+        response = session.get(url, headers=headers, verify=False)
+        soup = BeautifulSoup(response.content, 'html.parser')
 
-    soup = BeautifulSoup(response.content, 'html.parser')
+        # Safe fetch function for hidden input fields
+        def safe_get(field_id):
+            tag = soup.find('input', {'id': field_id})
+            return tag['value'] if tag else None
 
-    # Parsing the result page
-    results_table = soup.find('table', id='GridView1')
-    if results_table:
-        print("✅ Results table found.")
-        results = []
-        rows = results_table.find_all('tr')[1:]  # Skip header
-        for row in rows:
-            columns = row.find_all('td')
-            result = {
-                'sub_code': columns[0].text.strip(),
-                'sub_name': columns[1].text.strip(),
-                'int_mark': columns[2].text.strip(),
-                'ext_mark': columns[3].text.strip(),
-                'total': columns[4].text.strip(),
-                'result': columns[5].text.strip()
-            }
-            results.append(result)
-        print(f"🎉 Total subjects found: {len(results)}")
-        return results
-    else:
-        print("❌ No results table found.")
+        viewstate = safe_get('__VIEWSTATE')
+        viewstategenerator = safe_get('__VIEWSTATEGENERATOR')
+        eventvalidation = safe_get('__EVENTVALIDATION')
+
+        # Check if all essential fields are found
+        if not all([viewstate, viewstategenerator, eventvalidation]):
+            print("❌ Error: Required hidden fields not found on the page.")
+            return None
+
+        # Now prepare the POST request payload
+        payload = {
+            '__VIEWSTATE': viewstate,
+            '__VIEWSTATEGENERATOR': viewstategenerator,
+            '__EVENTVALIDATION': eventvalidation,
+            'TxtRegno': reg_no,
+            'CMbExam': exam,
+            'Button1': 'Submit'
+        }
+
+        # POST request to submit the form
+        post_response = session.post(url, data=payload, headers=headers, verify=False)
+        post_soup = BeautifulSoup(post_response.content, 'html.parser')
+
+        # Parse results table
+        results_table = post_soup.find('table', id='GridView1')
+        if results_table:
+            results = []
+            rows = results_table.find_all('tr')[1:]  # Skip header row
+            for row in rows:
+                columns = row.find_all('td')
+                result = {
+                    'sub_code': columns[0].text.strip(),
+                    'sub_name': columns[1].text.strip(),
+                    'int_mark': columns[2].text.strip(),
+                    'ext_mark': columns[3].text.strip(),
+                    'total': columns[4].text.strip(),
+                    'result': columns[5].text.strip()
+                }
+                results.append(result)
+            return results
+        else:
+            return None
+
+    except Exception as e:
+        print(f"❌ Exception occurred: {e}")
         return None
 
 
-# Flask API route
+# Flask route for getting the result
 @app.route('/get_result', methods=['POST'])
 def get_result():
-    data = request.get_json()
-    reg_no = data.get('reg_no')
-    exam = data.get('exam')
-
-    print(f"📥 API call received: reg_no={reg_no}, exam={exam}")
+    data = request.get_json()  # Parse the JSON data from the request body
+    reg_no = data.get('reg_no')  # Get the registration number
+    exam = data.get('exam')  # Get the exam session
 
     if not reg_no or not exam:
         return jsonify({'error': 'Missing registration number or exam value'}), 400
 
-    results = get_results(reg_no, exam)
+    results = get_results(reg_no, exam)  # Call the get_results function with the provided data
     if results:
-        return jsonify({'status': 'success', 'results': results})
+        return jsonify({'status': 'success', 'results': results})  # Return the results as JSON
     else:
         return jsonify({'status': 'error', 'message': 'No results found or invalid data.'}), 404
 
